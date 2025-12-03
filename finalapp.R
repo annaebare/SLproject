@@ -34,8 +34,7 @@ scaled_cols <- predict(scale, full_data %>% dplyr::select(tempo))
 full_data <- full_data %>% mutate(tempo = scaled_cols$tempo)
 
 # Choose vars used for clustering
-vars <- c("acousticness", "danceability", "energy", "instrumentalness",
-          "valence", "speechiness")
+vars <- c("acousticness", "danceability", "valence", "energy", "tempo")
 
 cont_data <- full_data %>% dplyr::select(all_of(vars))
 data <- full_data %>% dplyr::select(c("track_id", "artist_name", "track_name", all_of(vars)))
@@ -50,140 +49,25 @@ gmm_data$class <- as.factor(gmm$classification)
 km_data <- data
 km_data$class <- as.factor(km$cluster)
 
-
-# =========================
-# GET PREVIEW URLS
-# =========================
-# Sys.setenv(
-#   SPOTIFY_CLIENT_ID     = "ccc922e2b87d4316ac0883cee2e7add6",
-#   SPOTIFY_CLIENT_SECRET = "3c8edab6128a493bbedabcde311b1683"
-# )
-# 
-# access_token <- get_spotify_access_token()
-# 
-# library(httr)
-# library(jsonlite)
-# library(purrr)
-# 
-# get_preview_urls_safe <- function(track_id, access_token) {
-#   
-#     url <- paste0(
-#       "https://api.spotify.com/v1/tracks?ids=",
-#       paste(track_id, collapse = ",")
-#     )
-# 
-#     res <- GET(
-#       url,
-#       add_headers(Authorization = paste("Bearer", access_token))
-#     )
-# 
-#     if (status_code(res) != 200) {
-#       warning("Spotify API request failed with status ", status_code(res))
-#       return(rep(NA_character_, length(id_batch)))
-#     }
-# 
-#     parsed <- content(res, as = "parsed", simplifyVector = TRUE)
-#     return(parsed)
-  # 
-  # track_ids <- track_ids[!is.na(track_ids)]
-  # track_ids <- track_ids[track_ids != ""]
+get_itunes_preview <- function(song, artist, limit = 1) {
   
-  #batches <- split(track_ids, ceiling(seq_along(track_ids) / 50))
+  term <- paste(song, artist)
   
-  # preview_urls <- map(batches, function(id_batch) {
-  #   
-  #   url <- paste0(
-  #     "https://api.spotify.com/v1/tracks?ids=",
-  #     paste(id_batch, collapse = ",")
-  #   )
-  #   
-  #   res <- GET(
-  #     url,
-  #     add_headers(Authorization = paste("Bearer", access_token))
-  #   )
-  #   
-  #   if (status_code(res) != 200) {
-  #     warning("Spotify API request failed with status ", status_code(res))
-  #     return(rep(NA_character_, length(id_batch)))
-  #   }
-  #   
-  #   parsed <- content(res, as = "parsed", simplifyVector = FALSE)
-  #   return(parsed)
-  #   
-  #   if (is.null(parsed$tracks)) {
-  #     return(rep(NA_character_, length(id_batch)))
-  #   }
-  #   
-  #   map_chr(parsed$tracks, function(x) {
-  #     
-  #     # ✅ THIS IS THE CRITICAL SAFETY FIX
-  #     if (is.null(x)) return(NA_character_)
-  #     if (!is.list(x)) return(NA_character_)
-  #     if (is.null(x$preview_url)) return(NA_character_)
-  #     
-  #     x$preview_url
-  #   })
-  #   
-  # }) |> unlist()
-  # 
-  # preview_urls
-# }
-
-# 
-# test <- get_preview_urls_safe(
-#   "11dFghVXANMlKmJXsNCbNl",
-#   access_token
-# )
-# 
-# library(httr)
-# 
-# res <- GET(
-#   "https://api.spotify.com/v1/tracks/11dFghVXANMlKmJXsNCbNl",
-#   add_headers(Authorization = paste("Bearer", access_token))
-# )
-# 
-# status_code(res)
-# 
-# 
-# status_code(res)
-# content(res, as = "text")
-# parsed <- content(res, as = "parsed", simplifyVector = TRUE)
-# parsed$preview_url
-# 
-# library(httr)
-# library(jsonlite)
-# 
-# library(httr)
-# library(jsonlite)
-# 
-get_deezer_preview <- function(artist, track) {
-  # Construct the query safely
-  query <- URLencode(paste0('artist:"', artist, '" track:"', track, '"'))
-
-  url <- paste0("https://api.deezer.com/search?q=", query)
-
-  res <- GET(url)
-  parsed <- content(res, as = "parsed", simplifyVector = TRUE)
-
-  if (length(parsed$data$preview) != 1) {
-    return(NA_character_)
-  }
-
-  return(parsed$data$preview)
+  url <- paste0(
+    "https://itunes.apple.com/search?",
+    "term=", URLencode(term),
+    "&entity=song",
+    "&limit=", limit
+  )
+  
+  response <- httr::GET(url)
+  json <- jsonlite::fromJSON(rawToChar(response$content))
+  
+  if (length(json$results) == 0) return(NA_character_)
+  
+  result = json$results
+  return(result$previewUrl)
 }
-
-#get_deezer_preview("Nicki Minaj", "Barbie Dreams")
-# 
-# # Example
-# 
-# preview_df <- data %>%
-#   dplyr::select(artist_name, track_name) %>%
-#   rowwise() %>%
-#   mutate(preview_url = get_deezer_preview(artist_name, track_name)) %>%
-#   ungroup()
-# 
-# # Assuming 'my_dataframe' is the data frame to save
-# save(preview_df, file = "preview_urls.RData")
 
 
 # =========================
@@ -299,6 +183,23 @@ ui <- fluidPage(
 
 server <- function(input, output, session) {
   
+  preview_cache <- reactiveVal(list())
+  
+  get_preview_cached <- function(artist, track) {
+    key <- paste(artist, track)
+    cache <- preview_cache()
+    
+    if (!is.null(cache[[key]])) return(cache[[key]])
+    
+    url <- get_itunes_preview(artist, track)
+    
+    cache[[key]] <- url
+    preview_cache(cache)
+    
+    url
+  }
+  
+  
   current_data <- reactive({
     if (input$model_type == "km") km_data else gmm_data
   })
@@ -344,8 +245,11 @@ server <- function(input, output, session) {
       input$track,
       n = input$n_closest
     )
-    df$preview_url <- purrr::map2_chr(df$artist_name, df$track_name, get_deezer_preview)
-    
+    df$preview_url <- purrr::map2_chr(
+      df$artist_name,
+      df$track_name,
+      get_preview_cached
+    )
     df
   })
   
@@ -375,7 +279,7 @@ server <- function(input, output, session) {
               if (!is.na(song$preview_url)) {
                 HTML(paste0(
                   '<audio controls preload="none" style="width:150px;">',
-                  '<source src="', song$preview_url, '" type="audio/mpeg">',
+                  '<source src="', song$preview_url, '" type="audio/mp4">',
                   'Your browser does not support the audio element.',
                   '</audio>'
                 ))
@@ -408,7 +312,7 @@ server <- function(input, output, session) {
           tags$br(),
           HTML(paste0(
             '<audio controls preload="none" style="width:300px;">',
-            '<source src="', song$preview_url, '" type="audio/mpeg">',
+            '<source src="', song$preview_url, '" type="audio/mp4">',
             'Your browser does not support the audio element.',
             '</audio>'
           ))

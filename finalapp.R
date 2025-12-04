@@ -321,27 +321,98 @@ server <- function(input, output, session) {
     
     cls <- if (input$model_type == "km") "km_class" else "gmm_class"
     
-    selected_song <- pca_df %>% filter(artist_name == input$artist,
-                                       track_name == input$track)
-    pca_df_samp <- pca_df %>% sample_n(5000)
-    keep_songs <- pca_df %>% filter(track_id %in% df$track_id)
-    pca_df_samp <- bind_rows(pca_df_samp, keep_songs, selected_song)
+    # ----------------------------
+    # Selected song
+    # ----------------------------
+    selected_song <- pca_df %>%
+      filter(artist_name == input$artist,
+             track_name == input$track) %>%
+      mutate(hover = paste0(
+        artist_name, " – ", track_name, "<br>",
+        "Cluster: ", .data[[cls]]
+      ))
     
-    p <- ggplot(pca_df_samp, aes(x = PC1, y = PC2, color = .data[[cls]])) +
-      geom_point(alpha = 0.5) +
-      labs(title = "PCA Embedding")
+    # ----------------------------
+    # Closest songs
+    # ----------------------------
+    closest_pts <- pca_df %>%
+      filter(track_id %in% df$track_id) %>%
+      mutate(hover = paste0(
+        artist_name, " – ", track_name, "<br>",
+        "Cluster: ", .data[[cls]]
+      ))
     
-    # Highlight selected song
-    if (!is.null(input$artist) && !is.null(input$track)) {
-      sel <- pca_df_samp %>%
-        filter(artist_name == input$artist,
-               track_name == input$track)
+    # ----------------------------
+    # Background points (keep cluster for color)
+    # ----------------------------
+    bg <- pca_df %>%
+      sample_n(5000) %>%
+      mutate(hover = paste0(
+        artist_name, " – ", track_name, "<br>",
+        "Cluster: ", .data[[cls]]
+      ))
+    
+    # ----------------------------
+    # Plotly interactive PCA
+    # ----------------------------
+    plt <- plot_ly() %>%
       
-      p <- p + geom_point(data = sel, size = 2, color = "black")
-    }
+      # Background cluster-colored points
+      add_trace(
+        data = bg,
+        x = ~PC1,
+        y = ~PC2,
+        type = "scatter",
+        mode = "markers",
+        color = ~.data[[cls]],
+        colors = "Set2",
+        marker = list(size = 6, opacity = 0.45),
+        text = ~hover,
+        hoverinfo = "text",
+        name = ~.data[[cls]],
+        showlegend = TRUE
+      ) %>%
+      
+      # Closest songs (red)
+      add_trace(
+        data = closest_pts,
+        x = ~PC1,
+        y = ~PC2,
+        type = "scatter",
+        mode = "markers",
+        marker = list(size = 10, color = "red"),
+        text = ~hover,
+        hoverinfo = "text",
+        name = "Closest Songs"
+      ) %>%
+      
+      # Selected song (yellow with black outline)
+      add_trace(
+        data = selected_song,
+        x = ~PC1,
+        y = ~PC2,
+        type = "scatter",
+        mode = "markers",
+        marker = list(
+          size = 16,
+          color = "yellow",
+          line = list(color = "black", width = 2)
+        ),
+        text = ~hover,
+        hoverinfo = "text",
+        name = "Selected Song"
+      ) %>%
+      
+      layout(
+        title = "PCA Embedding (Hover Labels)",
+        xaxis = list(title = "PC1"),
+        yaxis = list(title = "PC2")
+      )
     
-    ggplotly(p)
+    plt
   })
+  
+  
 }
 
 # =========================

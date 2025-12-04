@@ -8,7 +8,7 @@ pacman::p_load(mclust, tidyverse, ggplot2, patchwork, cluster, here, purrr, fmsb
                remotes, factoextra, clustMixType, glue, FeatureImpCluster, flexclust,
                ggradar, clustMD, DataExplorer, caret, parallel, snow, MASS, GGally, 
                dplyr, knitr, ClustOfVar, progress, distances, gt, shiny, tidyr, plotly,
-               httr, jsonlite, spotifyr)
+               httr, jsonlite, spotifyr, later, shinycssloaders)
 
 library(dplyr)
 # =========================
@@ -93,12 +93,17 @@ pca_df$gmm_class <- as.factor(gmm$classification)
 # =========================
 
 find_closest_songs <- function(dataset, artist, track, n = 5) {
-  if(!any(dataset$artist_name == artist & dataset$track_name == track)) {
-    stop("Song not found in dataset")
-  }
-  
+  # if(!any(dataset$artist_name == artist & dataset$track_name == track)) {
+  #   stop("Song not found in dataset")
+  # }
+  # 
   target_song <- dataset %>%
     filter(artist_name == artist, track_name == track)
+  
+  if (nrow(target_song) == 0) {
+    # Song not found, return empty df safely
+    return(data.frame())
+  }
   
   target_cluster <- target_song$class
   
@@ -131,7 +136,7 @@ choose_random_song <- function(data) {
   rand_song <- data %>% sample_n(1)
   artist <- rand_song %>% dplyr::pull(artist_name)
   track  <- rand_song %>% dplyr::pull(track_name)
-  c(artist, track)
+  return(c(artist, track))
 }
 
 # =========================
@@ -143,6 +148,7 @@ ui <- fluidPage(
   
   sidebarLayout(
     sidebarPanel(
+      width = 3,
       radioButtons(
         "model_type", "Clustering Model",
         choices = c("K-Means" = "km", "GMM" = "gmm"),
@@ -159,10 +165,25 @@ ui <- fluidPage(
     ),
     
     mainPanel(
+      width = 9,
       tabsetPanel(
         tabPanel("Closest Songs",
-                 uiOutput("closest_table"),
-                 plotlyOutput("pca_plot"))
+                 fluidRow(
+                   column(
+                     width=12,
+                     withSpinner(uiOutput("closest_table"))
+                   )
+                 ),
+                 fluidRow(
+                   column(
+                     width = 7,
+                     withSpinner(plotlyOutput("pca_plot"))
+                   ),
+                   column(
+                     width = 5,
+                     withSpinner(plotlyOutput("cluster_boxplots"))
+                   )
+                 ))
       )
     )
   )
@@ -190,7 +211,6 @@ server <- function(input, output, session) {
     url
   }
   
-  
   current_data <- reactive({
     if (input$model_type == "km") km_data else gmm_data
   })
@@ -214,28 +234,55 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$random_song, {
-    rs <- choose_random_song(current_data())
+    dataset <- current_data()
+    rs <- choose_random_song(dataset)
+    artist_sel <- rs[1]
+    track_sel <- rs[2]
     
-    updateSelectInput(session, "artist", selected = rs[1])
+    # Step 1: update artist choices
+    updateSelectizeInput(session, "artist",
+                         choices = sort(unique(dataset$artist_name)),
+                         selected = NULL,
+                         server = TRUE)
     
-    tracks <- current_data() %>%
-      filter(artist_name == rs[1]) %>%
-      pull(track_name) %>%
-      unique()
-    
-    updateSelectInput(session, "track",
-                      choices = tracks,
-                      selected = rs[2])
+    # Step 2: schedule the selection to happen after choices are loaded
+    session$onFlushed(function() {
+      updateSelectizeInput(session, "artist",
+                           choices = sort(unique(dataset$artist_name)),
+                           selected = artist_sel,
+                           server = TRUE)
+      
+      # Update tracks immediately after artist selection
+      tracks <- dataset %>%
+        filter(artist_name == artist_sel) %>%
+        pull(track_name) %>% unique() %>% sort()
+      
+      updateSelectInput(session, "track",
+                        choices = tracks,
+                        selected = track_sel)
+    }, once = TRUE)
   })
+  
   
   closest_reactive <- reactive({
     req(input$artist, input$track)
+    
+    df <- tryCatch(
+      find_closest_songs(current_data(), input$artist, input$track, n = input$n_closest),
+      error = function(e) data.frame()
+    )
+    
+    if (nrow(df) == 0) return(df)
+    
     df <- find_closest_songs(
       current_data(),
       input$artist,
       input$track,
       n = input$n_closest
     )
+    
+    if (nrow(df) == 0) return(df)
+    
     df$preview_url <- purrr::map2_chr(
       df$artist_name,
       df$track_name,
@@ -247,7 +294,7 @@ server <- function(input, output, session) {
   output$closest_table <- renderUI({
     df <- closest_reactive()
     
-    if(nrow(df) == 0) return(tags$h4("No similar songs found."))
+    #if(nrow(df) == 0) return(tags$h4("No similar songs found."))
     
     tags$table(
       class = "table table-striped",
@@ -365,7 +412,7 @@ server <- function(input, output, session) {
         type = "scatter",
         mode = "markers",
         color = ~.data[[cls]],
-        colors = "Set2",
+        colors = "Set3",
         marker = list(size = 6, opacity = 0.45),
         text = ~hover,
         hoverinfo = "text",
@@ -380,7 +427,7 @@ server <- function(input, output, session) {
         y = ~PC2,
         type = "scatter",
         mode = "markers",
-        marker = list(size = 10, color = "red"),
+        marker = list(size = 8, color = "red"),
         text = ~hover,
         hoverinfo = "text",
         name = "Closest Songs"
@@ -394,7 +441,7 @@ server <- function(input, output, session) {
         type = "scatter",
         mode = "markers",
         marker = list(
-          size = 16,
+          size = 10,
           color = "yellow",
           line = list(color = "black", width = 2)
         ),
@@ -404,10 +451,58 @@ server <- function(input, output, session) {
       ) %>%
       
       layout(
-        title = "PCA Embedding (Hover Labels)",
+        title = "PCA Embedding",
         xaxis = list(title = "PC1"),
         yaxis = list(title = "PC2")
       )
+    
+    plt
+  })
+  
+  output$cluster_boxplots <- renderPlotly({
+    req(input$artist, input$track)
+    
+    # Current dataset
+    dataset <- current_data()
+    
+    # Find the selected song
+    selected_song <- dataset %>%
+      filter(artist_name == input$artist, track_name == input$track)
+    
+    req(nrow(selected_song) > 0)
+    
+    cluster_id <- selected_song$class[1]
+    
+    # Subset all songs in the same cluster
+    cluster_songs <- dataset %>% filter(class == cluster_id)
+    
+    # Reshape to long format for plotting
+    cluster_long <- cluster_songs %>%
+      pivot_longer(cols = all_of(vars),
+                   names_to = "feature",
+                   values_to = "value")
+    
+    # Add hover text
+    cluster_long <- cluster_long %>%
+      mutate(hover_text = paste0("Track: ", track_name, "<br>",
+                                 "Artist: ", artist_name, "<br>",
+                                 "Value: ", round(value, 3)))
+    
+    # Create plotly boxplots with points
+    plt <- plot_ly(cluster_long, 
+                   x = ~feature, 
+                   y = ~value, 
+                   type = "box", 
+                   boxpoints = "suspectedoutliers",  # show all points
+                   jitter = 0.3,
+                   pointpos = 0,
+                   text = ~hover_text,
+                   hoverinfo = "text",  # only show the hover_text
+                   marker = list(size = 5, opacity = 0.6),
+                   line = list(color = "blue")) %>%
+      layout(title = paste("Distribution of Features in Cluster", cluster_id),
+             yaxis = list(title = "Scaled Value"),
+             xaxis = list(title = "Feature"))
     
     plt
   })

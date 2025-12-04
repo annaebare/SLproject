@@ -14,6 +14,9 @@ library(dplyr)
 # =========================
 # LOAD DATA & MODELS
 # =========================
+#pca_df_samp <- pca_df %>% sample_n(5000)
+#keep_songs <- pca_df %>% filter(track_id %in% full_data$track_id)
+
 full_data <- read.csv("SpotifyFeatures.csv") %>%
   distinct(track_id, .keep_all = TRUE)
 
@@ -74,15 +77,14 @@ get_itunes_preview <- function(song, artist, limit = 1) {
 # PCA EMBEDDING (NUMERIC FEATURES)
 # =========================
 
-numeric_cols <- sapply(cont_data, is.numeric)
-pca_model <- prcomp(cont_data[, numeric_cols], scale. = TRUE)
+pca_model <- prcomp(cont_data, scale. = TRUE)
 
 pca_df <- data.frame(
   PC1 = pca_model$x[,1],
   PC2 = pca_model$x[,2]
 )
 
-pca_df <- bind_cols(pca_df, data %>% dplyr::select(artist_name, track_name))
+pca_df <- bind_cols(pca_df, data %>% dplyr::select(track_id, artist_name, track_name))
 pca_df$km_class  <- as.factor(km$cluster)
 pca_df$gmm_class <- as.factor(gmm$classification)
 
@@ -159,19 +161,8 @@ ui <- fluidPage(
     mainPanel(
       tabsetPanel(
         tabPanel("Closest Songs",
-                 uiOutput("closest_table")),
-        
-        tabPanel("Distance Plot",
-                 plotlyOutput("distance_plot")),
-        
-        tabPanel("PCA Embedding",
-                 plotlyOutput("pca_plot")),
-        
-        tabPanel("Audio Feature Comparison",
-                 plotlyOutput("feature_plot")),
-        
-        tabPanel("Audio Previews",
-                 uiOutput("audio_players"))
+                 uiOutput("closest_table"),
+                 plotlyOutput("pca_plot"))
       )
     )
   )
@@ -321,77 +312,33 @@ server <- function(input, output, session) {
     )
   })
   
-  
-  
-  output$distance_plot <- renderPlotly({
-    df <- closest_reactive()
-    
-    p <- ggplot(df, aes(x = reorder(track_name, dist), y = dist)) +
-      geom_col() +
-      coord_flip() +
-      labs(x = "Track", y = "Distance",
-           title = "Distances to Closest Songs")
-    
-    ggplotly(p)
-  })
-  
   # =========================
   # PCA PLOT
   # =========================
   
   output$pca_plot <- renderPlotly({
+    df <- closest_reactive()
+    
     cls <- if (input$model_type == "km") "km_class" else "gmm_class"
     
-    p <- ggplot(pca_df, aes(x = PC1, y = PC2, color = .data[[cls]])) +
+    selected_song <- pca_df %>% filter(artist_name == input$artist,
+                                       track_name == input$track)
+    pca_df_samp <- pca_df %>% sample_n(5000)
+    keep_songs <- pca_df %>% filter(track_id %in% df$track_id)
+    pca_df_samp <- bind_rows(pca_df_samp, keep_songs, selected_song)
+    
+    p <- ggplot(pca_df_samp, aes(x = PC1, y = PC2, color = .data[[cls]])) +
       geom_point(alpha = 0.5) +
       labs(title = "PCA Embedding")
     
     # Highlight selected song
     if (!is.null(input$artist) && !is.null(input$track)) {
-      sel <- pca_df %>%
+      sel <- pca_df_samp %>%
         filter(artist_name == input$artist,
                track_name == input$track)
       
-      p <- p + geom_point(data = sel, size = 4, color = "black")
+      p <- p + geom_point(data = sel, size = 2, color = "black")
     }
-    
-    ggplotly(p)
-  })
-  
-  # =========================
-  # AUDIO FEATURE COMPARISON
-  # =========================
-  
-  output$feature_plot <- renderPlotly({
-    df <- closest_reactive()
-    
-    target <- current_data() %>%
-      filter(artist_name == input$artist,
-             track_name == input$track)
-    
-    numeric_cols <- sapply(df, is.numeric)
-    numeric_cols["dist"]  <- FALSE
-    numeric_cols["class"] <- FALSE
-    
-    feature_names <- names(df)[numeric_cols]
-    
-    target_long <- target %>%
-      select(all_of(feature_names)) %>%
-      pivot_longer(everything(), names_to = "feature", values_to = "value") %>%
-      mutate(type = "Target")
-    
-    compare_long <- df %>%
-      slice(1) %>%
-      select(all_of(feature_names)) %>%
-      pivot_longer(everything(), names_to = "feature", values_to = "value") %>%
-      mutate(type = "Closest Neighbor")
-    
-    plot_df <- bind_rows(target_long, compare_long)
-    
-    p <- ggplot(plot_df, aes(x = feature, y = value, fill = type)) +
-      geom_col(position = "dodge") +
-      coord_flip() +
-      labs(title = "Audio Feature Comparison")
     
     ggplotly(p)
   })

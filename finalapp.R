@@ -8,63 +8,55 @@ pacman::p_load(mclust, tidyverse, ggplot2, patchwork, cluster, here, purrr, fmsb
                remotes, factoextra, clustMixType, glue, FeatureImpCluster, flexclust,
                ggradar, clustMD, DataExplorer, caret, parallel, snow, MASS, GGally, 
                dplyr, knitr, ClustOfVar, progress, distances, gt, shiny, tidyr, plotly,
-               httr, jsonlite, spotifyr, later, shinycssloaders)
+               httr, jsonlite, spotifyr, later, shinycssloaders, scales, dplyr)
 
-library(dplyr)
 # =========================
 # LOAD DATA & MODELS
 # =========================
-#pca_df_samp <- pca_df %>% sample_n(5000)
-#keep_songs <- pca_df %>% filter(track_id %in% full_data$track_id)
-
-full_data <- read.csv("SpotifyFeatures.csv") %>%
-  distinct(track_id, .keep_all = TRUE)
-
-#load("preview_df.RData")
-
-#full_data$preview_url <- as.character(preview_df$preview_url)
-
-# get rid of comedy
-full_data <- full_data %>% filter(genre!="Comedy")
+# Read data
+full_data = read.csv("SpotifyFeatures.csv")
 
 # Remove duplicate tracks
-# duplicated_track_id <- full_data[duplicated(full_data$track_id),"track_id"]
-# full_data <- full_data %>% distinct(track_id, .keep_all = TRUE)
+duplicated_track_id = full_data[duplicated(full_data$track_id),"track_id"]
+full_data = full_data %>% distinct(track_id, .keep_all = TRUE)
 
 # Scale tempo and loudness
-scale <- preProcess(full_data %>% dplyr::select(tempo), method = c("range"))
-scaled_cols <- predict(scale, full_data %>% dplyr::select(tempo))
-full_data <- full_data %>% mutate(tempo = scaled_cols$tempo)
+scaled_tempo = rescale(full_data$tempo, to = c(0, 1))
+full_data = full_data %>% mutate(tempo = scaled_tempo)
 
-# Choose vars used for clustering
-vars <- c("acousticness", "danceability", "valence", "energy", "tempo")
+# Get rid of comedy
+full_data = full_data %>% filter(genre!="Comedy")
 
-cont_data <- full_data %>% dplyr::select(all_of(vars))
-data <- full_data %>% dplyr::select(c("track_id", "artist_name", "track_name", all_of(vars)))
+# Choose vars for model
+vars = c("acousticness", "danceability", "energy", 
+         "valence", "tempo", "speechiness")
 
-gmm <- readRDS("models/spotify_adevt_gmm.rds")
-km  <- readRDS("models/spotify_adevt_km.rds")
+cont_data = full_data %>% dplyr::select(all_of(vars))
+data = full_data %>% dplyr::select(c("track_id", "artist_name", "track_name", all_of(vars)))
+
+gmm = readRDS("models/FINALGMM.rds")
+km  = readRDS("models/FINALKM.rds")
 
 # Add cluster labels
-gmm_data <- data
-gmm_data$class <- as.factor(gmm$classification)
+gmm_data = data
+gmm_data$class = as.factor(gmm$classification)
 
-km_data <- data
-km_data$class <- as.factor(km$cluster)
+km_data = data
+km_data$class = as.factor(km$cluster)
 
-get_itunes_preview <- function(song, artist, limit = 1) {
+get_itunes_preview = function(song, artist, limit = 1) {
   
-  term <- paste(song, artist)
+  term = paste(song, artist)
   
-  url <- paste0(
+  url = paste0(
     "https://itunes.apple.com/search?",
     "term=", URLencode(term),
     "&entity=song",
     "&limit=", limit
   )
   
-  response <- httr::GET(url)
-  json <- jsonlite::fromJSON(rawToChar(response$content))
+  response = httr::GET(url)
+  json = jsonlite::fromJSON(rawToChar(response$content))
   
   if (length(json$results) == 0) return(NA_character_)
   
@@ -77,73 +69,72 @@ get_itunes_preview <- function(song, artist, limit = 1) {
 # PCA EMBEDDING (NUMERIC FEATURES)
 # =========================
 
-pca_model <- prcomp(cont_data, scale. = TRUE)
+pca_model = prcomp(cont_data, scale. = TRUE)
 
-pca_df <- data.frame(
+pca_df = data.frame(
   PC1 = pca_model$x[,1],
   PC2 = pca_model$x[,2]
 )
 
-pca_df <- bind_cols(pca_df, data %>% dplyr::select(track_id, artist_name, track_name))
-pca_df$km_class  <- as.factor(km$cluster)
-pca_df$gmm_class <- as.factor(gmm$classification)
+pca_df = bind_cols(pca_df, data %>% dplyr::select(track_id, artist_name, track_name))
+pca_df$km_class  = as.factor(km$cluster)
+pca_df$gmm_class = as.factor(gmm$classification)
 
 # =========================
 # FUNCTIONS
 # =========================
 
-find_closest_songs <- function(dataset, artist, track, n = 5) {
+find_closest_songs = function(dataset, artist, track, n = 5) {
   # if(!any(dataset$artist_name == artist & dataset$track_name == track)) {
   #   stop("Song not found in dataset")
   # }
   # 
-  target_song <- dataset %>%
-    filter(artist_name == artist, track_name == track)
+  target_song = dataset %>%
+  filter(artist_name == artist, track_name == track)
   
   if (nrow(target_song) == 0) {
     # Song not found, return empty df safely
     return(data.frame())
   }
   
-  target_cluster <- target_song$class
+  target_cluster = target_song$class
   
-  cluster_songs <- dataset %>%
+  cluster_songs = dataset %>%
     filter(class == target_cluster) %>%
     filter(!(artist_name == artist & track_name == track))
   
-  numeric_cols <- sapply(cluster_songs, is.numeric)
-  numeric_cols["class"] <- FALSE
+  numeric_cols = sapply(cluster_songs, is.numeric)
+  numeric_cols["class"] = FALSE
   
-  song_features   <- as.matrix(cluster_songs[, numeric_cols])
-  target_features <- as.numeric(target_song[, numeric_cols])
+  song_features   = as.matrix(cluster_songs[, numeric_cols])
+  target_features = as.numeric(target_song[, numeric_cols])
   
-  X_norm2 <- rowSums(song_features^2)
-  q_norm2 <- sum(target_features^2)
-  cross   <- song_features %*% target_features
+  target_mat = t(replicate(nrow(song_features), target_features))
+  diff = target_mat-song_features
+  d2 = rowSums(diff^2)
+  cluster_songs$dist = sqrt(d2)
   
-  d2 <- X_norm2 + q_norm2 - 2 * cross
-  
-  cluster_songs$dist <- sqrt(d2)
-  
-  closest_songs <- cluster_songs %>%
+  closest_songs = cluster_songs %>%
     arrange(dist) %>%
     head(n = n)
   
   closest_songs
 }
 
-choose_random_song <- function(data) {
-  rand_song <- data %>% sample_n(1)
-  artist <- rand_song %>% dplyr::pull(artist_name)
-  track  <- rand_song %>% dplyr::pull(track_name)
+
+choose_random_song = function(data) {
+  rand_song = data %>% sample_n(1)
+  artist = rand_song %>% dplyr::pull(artist_name)
+  track  = rand_song %>% dplyr::pull(track_name)
   return(c(artist, track))
 }
+
 
 # =========================
 # UI
 # =========================
 
-ui <- fluidPage(
+ui = fluidPage(
   titlePanel("Spotify Clustering & Song Similarity Explorer"),
   
   sidebarLayout(
@@ -151,8 +142,8 @@ ui <- fluidPage(
       width = 3,
       radioButtons(
         "model_type", "Clustering Model",
-        choices = c("K-Means" = "km", "GMM" = "gmm"),
-        selected = "km"
+        choices = c( "GMM" = "gmm", "K-Means" = "km"),
+        selected = "gmm"
       ),
       
       selectizeInput("artist", "Artist", choices = NULL),
@@ -193,25 +184,25 @@ ui <- fluidPage(
 # SERVER
 # =========================
 
-server <- function(input, output, session) {
+server = function(input, output, session) {
   
-  preview_cache <- reactiveVal(list())
+  preview_cache = reactiveVal(list())
   
-  get_preview_cached <- function(artist, track) {
-    key <- paste(artist, track)
-    cache <- preview_cache()
+  get_preview_cached = function(artist, track) {
+    key = paste(artist, track)
+    cache = preview_cache()
     
     if (!is.null(cache[[key]])) return(cache[[key]])
     
-    url <- get_itunes_preview(artist, track)
+    url = get_itunes_preview(artist, track)
     
-    cache[[key]] <- url
+    cache[[key]] = url
     preview_cache(cache)
     
     url
   }
   
-  current_data <- reactive({
+  current_data = reactive({
     if (input$model_type == "km") km_data else gmm_data
   })
   
@@ -224,7 +215,7 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$artist, {
-    tracks <- current_data() %>%
+    tracks = current_data() %>%
       filter(artist_name == input$artist) %>%
       pull(track_name) %>%
       unique() %>%
@@ -234,18 +225,18 @@ server <- function(input, output, session) {
   })
   
   observeEvent(input$random_song, {
-    dataset <- current_data()
-    rs <- choose_random_song(dataset)
-    artist_sel <- rs[1]
-    track_sel <- rs[2]
+    dataset = current_data()
+    rs = choose_random_song(dataset)
+    artist_sel = rs[1]
+    track_sel = rs[2]
     
-    # Step 1: update artist choices
+    # update artist choices
     updateSelectizeInput(session, "artist",
                          choices = sort(unique(dataset$artist_name)),
                          selected = NULL,
                          server = TRUE)
     
-    # Step 2: schedule the selection to happen after choices are loaded
+    # schedule the selection to happen after choices are loaded
     session$onFlushed(function() {
       updateSelectizeInput(session, "artist",
                            choices = sort(unique(dataset$artist_name)),
@@ -253,7 +244,7 @@ server <- function(input, output, session) {
                            server = TRUE)
       
       # Update tracks immediately after artist selection
-      tracks <- dataset %>%
+      tracks = dataset %>%
         filter(artist_name == artist_sel) %>%
         pull(track_name) %>% unique() %>% sort()
       
@@ -264,17 +255,17 @@ server <- function(input, output, session) {
   })
   
   
-  closest_reactive <- reactive({
+  closest_reactive = reactive({
     req(input$artist, input$track)
     
-    df <- tryCatch(
+    df = tryCatch(
       find_closest_songs(current_data(), input$artist, input$track, n = input$n_closest),
       error = function(e) data.frame()
     )
     
     if (nrow(df) == 0) return(df)
     
-    df <- find_closest_songs(
+    df = find_closest_songs(
       current_data(),
       input$artist,
       input$track,
@@ -283,7 +274,7 @@ server <- function(input, output, session) {
     
     if (nrow(df) == 0) return(df)
     
-    df$preview_url <- purrr::map2_chr(
+    df$preview_url = purrr::map2_chr(
       df$artist_name,
       df$track_name,
       get_preview_cached
@@ -291,8 +282,8 @@ server <- function(input, output, session) {
     df
   })
   
-  output$closest_table <- renderUI({
-    df <- closest_reactive()
+  output$closest_table = renderUI({
+    df = closest_reactive()
     
     #if(nrow(df) == 0) return(tags$h4("No similar songs found."))
     
@@ -305,7 +296,7 @@ server <- function(input, output, session) {
       ),
       tags$tbody(
         lapply(seq_len(nrow(df)), function(i) {
-          song <- df[i, ]
+          song = df[i, ]
           
           tags$tr(
             tags$td(song$artist_name),
@@ -331,18 +322,18 @@ server <- function(input, output, session) {
     )
   })
   
-  output$audio_players <- renderUI({
-    df <- closest_reactive()
+  output$audio_players = renderUI({
+    df = closest_reactive()
     
-    df <- df %>%
-      filter(!is.na(preview_url) & nzchar(preview_url)) %>%
+    df = df %>%
+      #filter(!is.na(preview_url) & nzchar(preview_url)) %>%
       slice(1:5)  # show top 5 with valid preview URLs
     
     if(nrow(df) == 0) return(tags$h4("No audio previews available for these songs."))
     
     tagList(
       lapply(seq_len(nrow(df)), function(i) {
-        song <- df[i, ]
+        song = df[i, ]
         
         tags$div(
           style = "margin-bottom: 15px;",
@@ -363,15 +354,15 @@ server <- function(input, output, session) {
   # PCA PLOT
   # =========================
   
-  output$pca_plot <- renderPlotly({
-    df <- closest_reactive()
+  output$pca_plot = renderPlotly({
+    df = closest_reactive()
     
-    cls <- if (input$model_type == "km") "km_class" else "gmm_class"
+    cls = if (input$model_type == "km") "km_class" else "gmm_class"
     
     # ----------------------------
     # Selected song
     # ----------------------------
-    selected_song <- pca_df %>%
+    selected_song = pca_df %>%
       filter(artist_name == input$artist,
              track_name == input$track) %>%
       mutate(hover = paste0(
@@ -382,7 +373,7 @@ server <- function(input, output, session) {
     # ----------------------------
     # Closest songs
     # ----------------------------
-    closest_pts <- pca_df %>%
+    closest_pts = pca_df %>%
       filter(track_id %in% df$track_id) %>%
       mutate(hover = paste0(
         artist_name, " – ", track_name, "<br>",
@@ -390,9 +381,9 @@ server <- function(input, output, session) {
       ))
     
     # ----------------------------
-    # Background points (keep cluster for color)
+    # Background points
     # ----------------------------
-    bg <- pca_df %>%
+    bg = pca_df %>%
       sample_n(5000) %>%
       mutate(hover = paste0(
         artist_name, " – ", track_name, "<br>",
@@ -402,7 +393,7 @@ server <- function(input, output, session) {
     # ----------------------------
     # Plotly interactive PCA
     # ----------------------------
-    plt <- plot_ly() %>%
+    plt = plot_ly() %>%
       
       # Background cluster-colored points
       add_trace(
@@ -413,7 +404,7 @@ server <- function(input, output, session) {
         mode = "markers",
         color = ~.data[[cls]],
         colors = "Set3",
-        marker = list(size = 6, opacity = 0.45),
+        marker = list(size = 6, opacity = 0.6),
         text = ~hover,
         hoverinfo = "text",
         name = ~.data[[cls]],
@@ -443,7 +434,7 @@ server <- function(input, output, session) {
         marker = list(
           size = 10,
           color = "yellow",
-          line = list(color = "black", width = 2)
+          line = list(color = "black", width = 1)
         ),
         text = ~hover,
         hoverinfo = "text",
@@ -459,54 +450,101 @@ server <- function(input, output, session) {
     plt
   })
   
-  output$cluster_boxplots <- renderPlotly({
+  output$cluster_boxplots = renderPlotly({
     req(input$artist, input$track)
     
-    # Current dataset
-    dataset <- current_data()
+    dataset = current_data()
     
-    # Find the selected song
-    selected_song <- dataset %>%
-      filter(artist_name == input$artist, track_name == input$track)
-    
+    # Selected song
+    selected_song = dataset %>%
+      filter(artist_name == input$artist,
+             track_name == input$track)
     req(nrow(selected_song) > 0)
     
-    cluster_id <- selected_song$class[1]
+    cluster_id = selected_song$class[1]
     
-    # Subset all songs in the same cluster
-    cluster_songs <- dataset %>% filter(class == cluster_id)
+    # All songs in cluster
+    cluster_songs = dataset %>% filter(class == cluster_id)
     
-    # Reshape to long format for plotting
-    cluster_long <- cluster_songs %>%
-      pivot_longer(cols = all_of(vars),
+    closest = closest_reactive()
+    
+    # Long format for boxplots
+    cluster_long = cluster_songs %>%
+      pivot_longer(all_of(vars),
                    names_to = "feature",
                    values_to = "value")
     
-    # Add hover text
-    cluster_long <- cluster_long %>%
-      mutate(hover_text = paste0("Track: ", track_name, "<br>",
-                                 "Artist: ", artist_name, "<br>",
-                                 "Value: ", round(value, 3)))
+    # ---- BOX PLOT ----
+    plt = plot_ly() %>%
+      add_trace(
+        data = cluster_long,
+        type = "box",
+        x = ~feature,
+        y = ~value,
+        boxpoints = "outliers",
+        jitter = 0,
+        pointpos = 0,
+        marker = list(color = "blue"),
+        name = "Distribution"
+      )
     
-    # Create plotly boxplots with points
-    plt <- plot_ly(cluster_long, 
-                   x = ~feature, 
-                   y = ~value, 
-                   type = "box", 
-                   boxpoints = "suspectedoutliers",  # show all points
-                   jitter = 0.3,
-                   pointpos = 0,
-                   text = ~hover_text,
-                   hoverinfo = "text",  # only show the hover_text
-                   marker = list(size = 5, opacity = 0.6),
-                   line = list(color = "blue")) %>%
-      layout(title = paste("Distribution of Features in Cluster", cluster_id),
-             yaxis = list(title = "Scaled Value"),
-             xaxis = list(title = "Feature"))
+    # ---- CLOSEST SONGS ----
+    if (nrow(closest) > 0) {
+      closest_long = closest %>%
+        pivot_longer(all_of(vars),
+                     names_to = "feature",
+                     values_to = "value") %>%
+        mutate(hover_text = paste0(
+          "<b>", track_name, "</b><br>",
+          artist_name, "<br>"
+        ))
+      
+      plt = plt %>% add_trace(
+        data = closest_long,
+        type = "scatter",
+        mode = "markers",
+        x = ~feature,
+        y = ~value,
+        text = ~hover_text,
+        hoverinfo = "text",
+        marker = list(color = "red", size = 8),
+        name = "Closest Songs"
+      )
+      
+      # ---- SELECTED SONG ----
+      selected_long = selected_song %>%
+        pivot_longer(all_of(vars),
+                     names_to = "feature",
+                     values_to = "value") %>%
+        mutate(hover_text = paste0(
+          "<b>", track_name, "</b><br>",
+          artist_name, "<br>"
+        ))
+      
+      plt = plt %>% add_trace(
+        data = selected_long,
+        type = "scatter",
+        mode = "markers",
+        x = ~feature,
+        y = ~value,
+        text = ~hover_text,
+        hoverinfo = "text",
+        marker = list(
+          color = "yellow",
+          size = 10,
+          line = list(color = "black", width = 2),
+          opacity = 0.8
+        ),
+        name = "Selected Song"
+      )
+    }
     
-    plt
+    plt %>% layout(
+      title = paste("Cluster", cluster_id, "Feature Distributions"),
+      xaxis = list(title = ""),
+      yaxis = list(title = "Scaled Value")
+    )
   })
-  
   
 }
 

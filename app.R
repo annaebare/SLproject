@@ -278,13 +278,6 @@ server = function(input, output, session) {
     # Prevent error while loading
     if (nrow(df) == 0) return(df)
     
-    df = find_closest_songs(
-      current_data(),
-      input$artist,
-      input$track,
-      n = input$n_closest
-    )
-    
     # Show preview url
     df$preview_url = purrr::map2_chr(
       df$artist_name,
